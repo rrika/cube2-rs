@@ -5,3 +5,5 @@ authors = ["Erika <rrika9@yahoo.com>"]
 edition = "2018"
 
 [dependencies]
+byteorder = "1.3"
+flate2 = "1.0"

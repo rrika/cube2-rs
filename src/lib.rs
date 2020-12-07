@@ -1,3 +1,5 @@
+pub mod ogz;
+
 #[cfg(test)]
 mod tests {
     #[test]
