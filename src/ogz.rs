@@ -33,6 +33,61 @@ struct VSlot {
 	colorscale: [f32; 3]
 }
 
+type Cubes = [Cube; 8];
+
+#[derive(Debug)]
+struct Cube {
+	children: Option<Box<Cubes>>,
+	// ext: Option<Box<CubeExt>>,
+	edges: [u8; 12],
+	texture: [u16; 6],
+	material: u16,
+	merged: u8,
+	escaped_visible: u8
+}
+
+struct SurfaceInfo {
+	lmid: [u8; 2],
+	verts: u8,
+	numverts: u8
+}
+
+const DEFAULT_GEOM: u16 = 1;
+
+impl Cube {
+	fn setface(&mut self, face: [u8; 4]) {
+		self.edges[0] = face[0];
+		self.edges[1] = face[1];
+		self.edges[2] = face[2];
+		self.edges[3] = face[3];
+		self.edges[4] = face[0];
+		self.edges[5] = face[1];
+		self.edges[6] = face[2];
+		self.edges[7] = face[3];
+		self.edges[8] = face[0];
+		self.edges[9] = face[1];
+		self.edges[10] = face[2];
+		self.edges[11] = face[3];
+	}
+	fn solidfaces(&mut self) {
+		self.setface([0x80, 0x80, 0x80, 0x80])
+	}
+	fn emptyfaces(&mut self) {
+		self.setface([0x00, 0x00, 0x00, 0x00])
+	}
+}
+
+impl Default for Cube {
+	fn default() -> Self { Cube {
+		children: None,
+		edges: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+		texture: [DEFAULT_GEOM; 6],
+		material: 0,
+		merged: 0,
+		escaped_visible: 0
+	} }
+}
+
 #[allow(unused_variables, non_snake_case)]
 fn read_vslot(rdr: &mut std::io::Cursor<Vec<u8>>, vs: &mut VSlot, changed: u32) {
 
@@ -94,19 +149,132 @@ fn read_vslot(rdr: &mut std::io::Cursor<Vec<u8>>, vs: &mut VSlot, changed: u32) 
 	}
 }
 
-#[allow(unused_variables)]
-fn read_cube(x: i32, y: i32, z: i32, s: i32, cur: &mut std::io::Cursor<Vec<u8>>) {
+#[allow(unused_variables, unused_parens)]
+fn read_cube(rdr: &mut std::io::Cursor<Vec<u8>>, c: &mut Cube, x: i32, y: i32, z: i32, s: i32) -> std::io::Result<()> {
+
+	assert!(s > 0);
+
+	let mapversion = 33;
+
+	let mut haschildren = false;
+	let octsav = rdr.read_u8()?;
+	println!("{} {} {} + {}: {:x}", x, y, z, s, octsav);
+	match (octsav & 7) {
+		0 /* OCTSAV_CHILDREN */ => {
+			return read_children(rdr, x, y, z, s >> 1)
+		}
+		1 /* OCTSAV_EMPTY */ => c.emptyfaces(),
+		2 /* OCTSAV_SOLID */ => c.solidfaces(),
+		3 /* OCTSAV_NORMAL */ => rdr.read_exact(&mut c.edges[..])?,
+		4 /* OCTSAV_LODCUBE */ => haschildren = true,
+		_ => panic!()
+	}
+
+	for ct in &mut c.texture { *ct = rdr.read_u16::<LittleEndian>()?; }
+	println!("{:?}", c.texture);
+
+	if mapversion < 7 {
+		panic!()
+	} else if mapversion <= 31 {
+		panic!()
+	} else {
+		if (octsav & 0x40) != 0 {
+			if mapversion <= 32 {
+				panic!()
+			} else {
+				c.material = rdr.read_u16::<LittleEndian>()?;
+			}
+		}
+		if (octsav & 0x80) != 0 {
+			c.merged = rdr.read_u8()?;
+		}
+		if (octsav & 0x20) != 0 {
+			let surfmask = rdr.read_u8()?;
+			let totalverts = rdr.read_u8()?;
+			println!("  {:x}", surfmask);
+			for i in 0..6 { if surfmask & (1<<i) != 0 {
+				let lmid = rdr.read_u16::<LittleEndian>()?;
+				let vertmask = rdr.read_u8()?;
+				let numverts = rdr.read_u8()?;
+				let layerverts = numverts & 15;
+				let mut hasxyz = vertmask & 0x04 != 0;
+				let mut hasuv = vertmask & 0x40 != 0;
+				let mut hasnorm = vertmask & 0x80 != 0;
+				println!("  {} {:x} {:x}", i, vertmask, numverts);
+				if numverts == 0 { continue }
+				if layerverts == 4 {
+					if hasxyz && (vertmask & 1) != 0 {
+						rdr.read_u16::<LittleEndian>()?; // TODO
+						rdr.read_u16::<LittleEndian>()?; // TODO
+						rdr.read_u16::<LittleEndian>()?; // TODO
+						rdr.read_u16::<LittleEndian>()?; // TODO
+						hasxyz = false;
+					}
+					if hasuv && (vertmask & 2) != 0 {
+						rdr.read_u16::<LittleEndian>()?; // TODO
+						rdr.read_u16::<LittleEndian>()?; // TODO
+						rdr.read_u16::<LittleEndian>()?; // TODO
+						rdr.read_u16::<LittleEndian>()?; // TODO
+
+						if (numverts & 0x80) != 0 {
+							rdr.read_u16::<LittleEndian>()?; // TODO
+							rdr.read_u16::<LittleEndian>()?; // TODO
+							rdr.read_u16::<LittleEndian>()?; // TODO
+							rdr.read_u16::<LittleEndian>()?; // TODO
+						}
+
+						hasuv = false;
+					}
+				}
+				if hasnorm && (vertmask & 8) != 0 {
+					rdr.read_u16::<LittleEndian>()?; // TODO
+					hasnorm = false;
+				}
+				if hasxyz || hasuv || hasnorm {
+					for k in 0..layerverts {
+						if hasxyz {
+							rdr.read_u16::<LittleEndian>()?; // TODO
+							rdr.read_u16::<LittleEndian>()?; // TODO
+						}
+						if hasuv {
+							rdr.read_u16::<LittleEndian>()?; // TODO
+							rdr.read_u16::<LittleEndian>()?; // TODO
+						}
+						if hasnorm {
+							rdr.read_u16::<LittleEndian>()?; // TODO
+						}
+					}
+				}
+				if (numverts & 0x80 /* LAYER_DUP */) != 0 {
+					for k in 0..layerverts {
+						if hasuv {
+							rdr.read_u16::<LittleEndian>()?; // TODO
+							rdr.read_u16::<LittleEndian>()?; // TODO
+						}
+					}
+				}
+			} }
+		}
+	}
+
+	if haschildren {
+		read_children(rdr, x, y, z, s >> 1)
+	} else {
+		Ok(())
+	}
 }
 
-fn read_children(x: i32, y: i32, z: i32, s: i32, cur: &mut std::io::Cursor<Vec<u8>>) {
-	read_cube(x,   y,   z,   s, cur);
-	read_cube(x+s, y,   z,   s, cur);
-	read_cube(x,   y+s, z,   s, cur);
-	read_cube(x+s, y+s, z,   s, cur);
-	read_cube(x,   y,   z+s, s, cur);
-	read_cube(x+s, y,   z+s, s, cur);
-	read_cube(x,   y+s, z+s, s, cur);
-	read_cube(x+s, y+s, z+s, s, cur);
+fn read_children(rdr: &mut std::io::Cursor<Vec<u8>>, x: i32, y: i32, z: i32, s: i32) -> std::io::Result<()> {
+	let mut cubes = Box::new(Cubes::default());
+	read_cube(rdr, &mut cubes[0], x,   y,   z,   s)?;
+	read_cube(rdr, &mut cubes[1], x+s, y,   z,   s)?;
+	read_cube(rdr, &mut cubes[2], x,   y+s, z,   s)?;
+	read_cube(rdr, &mut cubes[3], x+s, y+s, z,   s)?;
+	read_cube(rdr, &mut cubes[4], x,   y,   z+s, s)?;
+	read_cube(rdr, &mut cubes[5], x+s, y,   z+s, s)?;
+	read_cube(rdr, &mut cubes[6], x,   y+s, z+s, s)?;
+	read_cube(rdr, &mut cubes[7], x+s, y+s, z+s, s)?;
+	return Ok(())
 }
 
 #[allow(unused_variables)]
@@ -223,7 +391,7 @@ pub fn read_header(zdata: &[u8]) -> std::io::Result<()> {
 	}
 
 	let hw = (worldsize >> 1) as i32;
-	read_children(0, 0, 0, hw, &mut rdr);
+	read_children(&mut rdr, 0, 0, 0, hw);
 
 	Ok(())
 }
